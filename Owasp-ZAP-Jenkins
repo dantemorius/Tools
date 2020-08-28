@@ -1,0 +1,77 @@
+pipeline {
+    agent any
+    environment { 
+        SCAN_TYPE = "${SCAN_TYPE}"
+    }
+    stages { 
+        stage('SCAN TYPE')   {
+            parallel {
+    
+        stage('OWASP ZAP - Basic Scan') {
+            when {
+                environment name: 'SCAN_TYPE', value: 'Basic'
+            }
+            steps {
+                script {
+                    cleanWs()
+                    //sh 'docker run --rm -v $(pwd):/zap/wrk/:rw -t owasp/zap2docker-weekly zap-baseline.py -t ${URL} --hook=/zap/auth_hook.py -z "auth.loginurl=https://auth.netcombo.com.br/web/login.html auth.username="Some_User" auth.password="Some_password" auth.username_field="login" auth.password_field="password"" -r owasp-report-${BUILD_NUMBER}.html -J owasp-report-${BUILD_NUMBER}.json -I'
+                    sh 'docker run -v $(pwd):/zap/wrk/:rw -t owasp/zap2docker-weekly zap-baseline.py -t ${URL} -g gen.conf -r zap-report.html -J zap-report-${BUILD_NUMBER}.json -I'
+                }
+            }
+        }
+
+
+        stage('OWASP ZAP - Full Scan') {
+            when {
+                environment name: 'SCAN_TYPE', value: 'Full'
+            }
+            steps {
+                script {
+                    cleanWs()
+                    sh 'docker run --rm -v $(pwd):/zap/wrk/:rw -t owasp/zap2docker-weekly zap-full-scan.py -t ${URL} -g gen.conf -r zap-report.html -J zap-report-${BUILD_NUMBER}.json -z "connection.timeoutInSecs=6000"'
+                }
+            }
+        }
+        
+        stage('OWASP ZAP - API Scan') {
+            when {
+                environment name: 'SCAN_TYPE', value: 'API'
+            }
+            steps {
+                script {
+                    cleanWs()
+                    configFileProvider([configFile(fileId: 'api.json', targetLocation: 'api.json', variable: 'ARQUIVO_JSON')]) {
+                    sh 'docker run  --rm -v $(pwd):/zap/wrk/:rw -t owasp/zap2docker-weekly zap-api-scan.py -t ${URL} -n ${ARQUIVO_JSON} -a -f openapi  -r zap-report.html -J zap-report-${BUILD_NUMBER}.json -I'
+                    } //End configFileProvider
+                }
+            }
+        }
+        
+            }//End Parallel
+        }//Stage SCAN TYPE
+    }//End Stages
+    post {
+        always {
+          // publish html
+            publishHTML(target : [allowMissing: true, 
+            alwaysLinkToLastBuild: true, 
+            includes: '**/*',
+            keepAll: true, 
+            reportDir: '.', 
+            reportFiles: 'zap-report.html', 
+            reportName: 'OWASP-ZAP-Report', 
+            reportTitles: 'ZAP Report: "${URL}" - "$JOB_NAME"-"$BUILD_NUMBER"'])
+                    sh 'cp zap-report.html zap-report-${JOB_NAME}-${BUILD_NUMBER}.html'
+                    //sh 'cp zap-report-${BUILD_NUMBER}.html report'
+                    //sh 'cp zap-report.html report'
+                    archiveArtifacts 'zap-report-${BUILD_NUMBER}.json, zap-report-${JOB_NAME}-${BUILD_NUMBER}.html, zap-report.html'
+                    sh 'ls'
+            //emailext body: '${FILE,path="zap-report-${JOB_NAME}-${BUILD_NUMBER}.html"}', mimeType: 'text/html', replyTo: 'noreply@example.com', subject: '[Digital] OWASPZap: Url:"${URL}" | Scan Type: ${SCAN_TYPE} | Job: "${JOB_NAME}" | Build: "${BUILD_NUMBER}"', to: 'noreply@example.com'
+            emailext body: '${FILE,path="zap-report-${JOB_NAME}-${BUILD_NUMBER}.html"}', mimeType: 'text/html', replyTo: 'noreply@example.com', subject: '[Digital] OWASPZap: Url:"${URL}" | Scan Type: ${SCAN_TYPE} | Job: "${JOB_NAME}" | Build: "${BUILD_NUMBER}"', to: 'noreply@example.com'
+            //Reports for Domo
+            withAWS(credentials: '325ffc95-628b-4242-b8e4-6ec65ae961af', profile: 'prd-ongoing', region: 'us-east-1') {
+            s3Upload acl: 'Private', bucket: 'domo-reports', includePathPattern: '*.json', path: 'owasp-zap', workingDir: '.'
+            }
+        } //End Always
+      } //End Post
+}//End Pipeline
